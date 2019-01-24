@@ -10,8 +10,9 @@ from django.forms import fields
 from django.db import models
 from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
-from Crypto import Random
-from Crypto.Random import random
+from django.utils import six
+from Cryptodome import Random
+from Cryptodome.Random import random
 
 if hasattr(settings, 'USE_CPICKLE'):
     warnings.warn(
@@ -35,6 +36,8 @@ else:
     PYTHON3 = False
     from django.utils.encoding import smart_str, force_unicode
 
+DEFAULT_BLOCK_TYPE = 'MODE_ECB'
+
 
 class BaseEncryptedField(models.Field):
     '''This code is based on the djangosnippet #1095
@@ -45,6 +48,8 @@ class BaseEncryptedField(models.Field):
         self.block_type = kwargs.pop('block_type', None)
         self.secret_key = kwargs.pop('secret_key', settings.SECRET_KEY)
         self.secret_key = self.secret_key[:32]
+        if PYTHON3 is True:
+            self.secret_key = bytes(self.secret_key.encode('utf-8'))
 
         if self.block_type is None:
             warnings.warn(
@@ -53,12 +58,13 @@ class BaseEncryptedField(models.Field):
                 "MODE_CBC). Please specify a secure block_type, such as CBC.",
                 DeprecationWarning,
             )
+            self.block_type = DEFAULT_BLOCK_TYPE
         try:
-            imp = __import__('Crypto.Cipher', globals(), locals(), [self.cipher_type], -1)
+            imp = __import__('Cryptodome.Cipher', globals(), locals(), [self.cipher_type], -1)
         except:
-            imp = __import__('Crypto.Cipher', globals(), locals(), [self.cipher_type])
+            imp = __import__('Cryptodome.Cipher', globals(), locals(), [self.cipher_type])
         self.cipher_object = getattr(imp, self.cipher_type)
-        if self.block_type:
+        if self.block_type != DEFAULT_BLOCK_TYPE:
             self.prefix = '$%s$%s$' % (self.cipher_type, self.block_type)
             self.iv = Random.new().read(self.cipher_object.block_size)
             self.cipher = self.cipher_object.new(
@@ -66,7 +72,7 @@ class BaseEncryptedField(models.Field):
                 getattr(self.cipher_object, self.block_type),
                 self.iv)
         else:
-            self.cipher = self.cipher_object.new(self.secret_key)
+            self.cipher = self.cipher_object.new(self.secret_key, getattr(self.cipher_object, self.block_type))
             self.prefix = '$%s$' % self.cipher_type
 
         self.original_max_length = max_length = kwargs.get('max_length', 40)
@@ -74,32 +80,30 @@ class BaseEncryptedField(models.Field):
         # always add at least 2 to the max_length:
         #     one for the null byte, one for padding
         max_length += 2
-        mod = max_length % self.cipher.block_size
+        mod = max_length % self.cipher_object.block_size
         if mod > 0:
-            max_length += self.cipher.block_size - mod
-        if self.block_type:
+            max_length += self.cipher_object.block_size - mod
+        if hasattr(self, 'iv'):
             max_length += len(self.iv)
         kwargs['max_length'] = max_length * 2 + len(self.prefix)
 
         super(BaseEncryptedField, self).__init__(*args, **kwargs)
 
     def _is_encrypted(self, value):
-        if PYTHON3 is True:
-            is_enc = isinstance(value, str) and value.startswith(self.prefix)
-            return is_enc
-        else:
-            return isinstance(value, basestring) and value.startswith(
-                self.prefix)
+        return (
+            isinstance(value, six.string_types) and
+            value.startswith(self.prefix)
+        )
 
     def _get_padding(self, value):
         # We always want at least 2 chars of padding (including zero byte),
         # so we could have up to block_size + 1 chars.
-        mod = (len(value) + 2) % self.cipher.block_size
-        return self.cipher.block_size - mod + 2
+        mod = (len(value) + 2) % self.cipher_object.block_size
+        return self.cipher_object.block_size - mod + 2
 
     def from_db_value(self, value, expression, connection, context):
         if self._is_encrypted(value):
-            if self.block_type:
+            if self.block_type != DEFAULT_BLOCK_TYPE:
                 self.iv = binascii.a2b_hex(value[len(self.prefix):])[:len(self.iv)]
                 self.cipher = self.cipher_object.new(
                     self.secret_key,
@@ -136,7 +140,7 @@ class BaseEncryptedField(models.Field):
                         random.choice(string.printable)
                         for index in range(padding - 1)
                     ])
-            if self.block_type:
+            if self.block_type != DEFAULT_BLOCK_TYPE:
                 self.cipher = self.cipher_object.new(
                     self.secret_key,
                     getattr(self.cipher_object, self.block_type),

@@ -4,7 +4,7 @@ node {
 
     sh 'mkdir -p ./_ci_repository'
     dir('./_ci_repository') {
-        git url: 'https://github.com/ihiji/ci', credentialsId: 'ihiji-chef-api-key-as-uname-pw'
+        git url: 'https://github.com/zsock/ci', credentialsId: 'ihiji-chef-api-key-as-uname-pw'
         dir ('./jenkins') {
             python = fileLoader.load('./python.groovy')
             python.repo = 'django-fields'
